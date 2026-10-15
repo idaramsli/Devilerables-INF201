@@ -2,4 +2,219 @@ https://frost.met.no/observations/v0.jsonld?sources=SN17850&referencetime=2025-0
 
 
 
+from pathlib import Path
+import requests
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
+# replacement for df_temp, can be deleted when task 1 is in place 
+
+params_2025 = {
+    "sources": "SN17850",
+    "elements": "mean(air_temperature P1D)",
+    "referencetime": "2025-01-01/2026-01-01",        #2025 instead of 1925
+}
+
+r_2025 = requests.get(endpoint, params_2025, auth=(client_id, ""))
+print(r_2025.status_code)
+
+data_2025 = r_2025.json()["data"]
+
+rows_2025 = []
+for item in data_2025:
+    for obs in item["observations"]:
+        rows_2025.append({
+            "referenceTime": item["referenceTime"],
+            "value": obs["value"],
+               "timeOffset": obs["timeOffset"],
+        })
+
+df_temp = pd.DataFrame(rows_2025)                     # <-- called df_temp
+df_temp["referenceTime"] = pd.to_datetime(df_temp["referenceTime"])
+df_temp = df_temp.sort_values("referenceTime").reset_index(drop=True)
+df_temp = df_temp.rename(columns={"value": "temperature"})   # <-- the column is called temperature
+df_temp = df_temp[df_temp["timeOffset"] == "PT0H"].reset_index(drop=True)
+
+print(len(df_temp))
+df_temp.head()
+remove
+
+
+
+#Task 3 
+
+endpoint = "https://frost.met.no/observations/v0.jsonld"            #fetches data from Frost
+endpoint_source = "https://frost.met.no/sources/v0.jsonld"
+params_source = {"ids": "SN17850"}                                  #ID for Ås
+client_id = Path("client_id.txt").read_text().strip()               #Reads client_id from file, to get access to Frost 
+
+r = requests.get(endpoint_source, params_source, auth=(client_id, ""))      #Sends request to Frost for station information (name, coordinates etc.)
+print(r.json())                                       #prints json with station information
+
+params_hist = {
+    "sources": "SN17850",
+    "elements": "mean(air_temperature P1D)",
+    "referencetime": "1925-01-01/1926-01-01",
+}                                                   #parameters for fetching historical temperature data for 1925
+
+r3 = requests.get(endpoint, params_hist, auth=(client_id, ""))      # Sends the request for temperatures for 1925. The response is stored in r3
+json_hist = r3.json()               # Converts the response from JSON text to Python dictionaries and lists
+
+
+if r3.status_code == 200:               #if the request was successful (status code 200), the data is stored in data_hist
+    data_hist = json_hist["data"]       #extracts the list of measurements
+    print("Historical temperature data from 1925 has been fetched")
+else:                       
+    print("Error fetching historical data:", r3.status_code)      #if not successful, the status code and error message are printed
+    print(json_hist.get("error", {}))           
+    raise SystemExit                        #stops the program if the request was not successful 
+
+
+
+rows_hist = []                      # Goes through each element in data (each element = one point in time)
+print(data_hist[0].keys())
+for item in data_hist:
+    for obs in item["observations"]:
+        rows_hist.append({
+            "referenceTime": item["referenceTime"],
+            "value": obs["value"],
+            "timeOffset": obs["timeOffset"],
+        })
+
+df_1925 = pd.DataFrame(rows_hist)                                           # Creates a table (DataFrame) from all the rows
+df_1925["referenceTime"] = pd.to_datetime(df_1925["referenceTime"])         # Converts the time text into real date objects, so we can calculate with them
+df_1925 = df_1925.sort_values("referenceTime").reset_index(drop=True)       # Sorts by date and renumbers the rows from 0
+df_1925 = df_1925.rename(columns={"value": "temperature_1925"})             # Gives the temperature column a clearer name
+
+df_temp["day_of_year"] = df_temp["referenceTime"].dt.dayofyear              # Creates a new column with day of year (1–365) for the 2025 data
+df_1925["day_of_year"] = df_1925["referenceTime"].dt.dayofyear              # Same for 1925, so both years share the same x-axis
+
+
+plt.figure(figsize=(14, 6))         #Creates a new figure, 14 x 6 inches
+
+plt.plot(df_temp["day_of_year"], df_temp["temperature"], 
+         color="tab:orange", linewidth=1.3, label="2025", alpha=0.9)   # Draws 1925 as an orange line
+
+plt.plot(df_1925["day_of_year"], df_1925["temperature_1925"], 
+         color="tab:blue", linewidth=1.3, label="1925", alpha=0.8)      # Draws 2025 as a blue line
+
+plt.title("Daily Temperature Comparison, 1925 vs 2025", fontsize=14)   #title of the figure
+plt.xlabel("Day of year")                 #label of the x-axis
+plt.ylabel("Temperature (°C)")            #label of the y-axis                                 
+plt.legend()                             #shows legend (which colour is which year)
+plt.grid(True, alpha=0.3)                #faint grid in the background  
+plt.tight_layout()                       #adjusts margins so nothing is cut off
+plt.show()                               #shows the figure
+
+
+summary_both = pd.DataFrame({                           #summarises both years
+    "Year": ["2025", "1925"],
+    "Mean (°C)": [
+        round(df_temp["temperature"].mean(), 2),
+        round(df_1925["temperature_1925"].mean(), 2)
+    ],
+    "Median (°C)": [
+        round(df_temp["temperature"].median(), 2),
+        round(df_1925["temperature_1925"].median(), 2)
+    ],
+    "Min (°C)": [
+        round(df_temp["temperature"].min(), 2),
+        round(df_1925["temperature_1925"].min(), 2)
+    ],
+    "Max (°C)": [
+        round(df_temp["temperature"].max(), 2),
+        round(df_1925["temperature_1925"].max(), 2)
+    ]
+})
+
+print("\n=== Temperature summary 1925 vs 2025 ===")
+print(summary_both.to_string(index=False))
+
+
+#Task 4
+
+import yaml
+
+
+def count_heatwaves(station_id: str, year: int, client_id: str,         #defines the function count_heatwaves, which takes station id, year, client_id, heatwave threshold, minimum number of days and output file name
+                    threshold: float = 27.0, min_days: int = 5,
+                    output_file: str = "heatwave_summary.yml"):
+    endpoint = "https://frost.met.no/observations/v0.jsonld"        # The address of the Frost endpoint for observations
+    params = {
+        "sources": station_id,
+        "elements": "max(air_temperature P1D)",
+        "referencetime": f"{year}-01-01/{year + 1}-01-01",      #parameter to fetch data for the whole year
+    }                                                           
+    
+    r = requests.get(endpoint, params, auth=(client_id, ""))       #Sends request to Frost for daily maximum temperatures for the whole year. The response is stored in r
+    if r.status_code != 200:                                # If the request was not successful (status code != 200), an exception is raised with an error message
+        raise Exception(f"Error fetching data: {r.status_code} – {r.json().get('error')}")     #
+    
+    data = r.json()["data"]     #extracts the list of measurements from the JSON response
+    
+    
+    rows = []           
+    for item in data:                       #for loop that goes through each point in time and each observation 
+        for obs in item["observations"]:
+            rows.append({
+                "date": pd.to_datetime(item["referenceTime"]).date(),
+                "max_temp": obs["value"],
+                "timeOffset": obs["timeOffset"],
+            })
+    
+    df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)      #Creates table, sorts by date and numbers the rows from 0
+    df = df[df["timeOffset"] == "PT0H"].reset_index(drop=True)              #Keeps only the PT0H version (midnight to midnight), and renumbers the rows
+                                                                                    #used because of the issue with two measurements per day
+    
+    heatwaves = []      
+    current_start = None
+    current_temps = []
+    
+    for i, row in df.iterrows():                #for loop that goes through each row in the table and checks whether the temperature is above the threshold
+        if row["max_temp"] >= threshold:
+            if current_start is None:
+                current_start = row["date"]
+            current_temps.append(row["max_temp"])
+        else:
+            if current_start is not None and len(current_temps) >= min_days:        #if there is an ongoing heatwave lasting at least min_days, it is stored in the heatwaves list
+                heatwaves.append({
+                    "start": str(current_start),
+                    "end": str(df.loc[i-1, "date"]),
+                    "duration_days": len(current_temps),
+                    "max_temperature": round(max(current_temps), 1)
+                })
+            current_start = None
+            current_temps = []
+    
+   
+    if current_start is not None and len(current_temps) >= min_days:        #
+        heatwaves.append({
+            "start": str(current_start),
+            "end": str(df.iloc[-1]["date"]),
+            "duration_days": len(current_temps),
+            "max_temperature": round(max(current_temps), 1)
+        })
+    
+
+    summary = {
+        "station_id": station_id,
+        "year": year,
+        "threshold_celsius": threshold,
+        "minimum_days": min_days,
+        "number_of_heatwaves": len(heatwaves),
+        "heatwaves": heatwaves
+    }
+    
+    with open(output_file, "w") as f:
+        yaml.dump(summary, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    
+    print(f"Found {len(heatwaves)} heatwave(s). Summary written to {output_file}")
+    return summary
+
+heatwave_result = count_heatwaves(
+    station_id="SN17850",
+    year=2025,
+    client_id = client_id,
+    output_file="heatwave_summary_2025.yml"
+)
